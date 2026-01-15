@@ -1,0 +1,35 @@
+name: Deploy MultiDocker
+on:
+  push:
+    branches:
+      - master # check your repo, your default branch might be master
+
+jobs:
+  build:
+    environment: dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+      - run: ls ./client
+      - run: docker build -t yanisble/react-test -f ./client/Dockerfile.dev ./client
+      - run: docker run -e CI=true yanisble/react-test npm test
+
+      - run: docker build -t yanisble/multi-client ./client
+      - run: docker build -t yanisble/multi-nginx ./nginx
+      - run: docker build -t yanisble/multi-server ./server
+      - run: docker build -t yanisble/multi-worker ./worker
+
+      - run: docker push yanisble/multi-client
+      - run: docker push yanisble/multi-nginx
+      - run: docker push yanisble/multi-server
+      - run: docker push yanisble/multi-worker
+      - name: Deploy to EB
+        uses: einaregilsson/beanstalk-deploy@v18
+        with:
+          application_name: docker-gh
+          environment_name: Dockergh-env
+          existing_bucket_name: elasticbeanstalk-us-east-1-923445559289
+          region: us-east-1
+          version_label: ${{ github.sha }}
+          deployment_package: deploy.zip
