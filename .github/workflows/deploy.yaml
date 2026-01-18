@@ -1,35 +1,63 @@
-name: Deploy MultiDocker
+name: Deploy MultiK8s
 on:
   push:
     branches:
-      - master # check your repo, your default branch might be master
+      - main
+
+env:
+  SHA: $(git rev-parse HEAD)
 
 jobs:
   build:
-    environment: dev
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-      - run: ls ./client
-      - run: docker build -t yanisble/react-test -f ./client/Dockerfile.dev ./client
-      - run: docker run -e CI=true yanisble/react-test npm test
 
-      - run: docker build -t yanisble/multi-client ./client
-      - run: docker build -t yanisble/multi-nginx ./nginx
-      - run: docker build -t yanisble/multi-server ./server
-      - run: docker build -t yanisble/multi-worker ./worker
+      - name: Test
+        run: |-
+          docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+          docker build -t yanisble/react-test -f ./client/Dockerfile.dev ./client
+          docker run -e CI=true yanisble/react-test npm test
 
-      - run: docker push yanisble/multi-client
-      - run: docker push yanisble/multi-nginx
-      - run: docker push yanisble/multi-server
-      - run: docker push yanisble/multi-worker
-      - name: Deploy to EB
-        uses: einaregilsson/beanstalk-deploy@v18
+      - name: Set Service Key
+        uses: 'google-github-actions/auth@v0'
         with:
-          application_name: docker-gh
-          environment_name: Dockergh-env
-          existing_bucket_name: elasticbeanstalk-us-east-1-923445559289
-          region: us-east-1
-          version_label: ${{ github.sha }}
-          deployment_package: deploy.zip
+          credentials_json: '${{ secrets.GKE_SA_KEY }}'
+
+      - name: Set Project
+        uses: google-github-actions/setup-gcloud@v0
+        with:
+          project_id: multi-k8s-484420
+
+      - name: Auth
+        run: |-
+          gcloud --quiet auth configure-docker
+
+      - name: Get Credentials
+        uses: google-github-actions/get-gke-credentials@v0
+        with:
+          cluster_name: multi-cluster
+          location: europe-west12
+
+      - name: Build
+        run: |-
+          docker build -t yanisble/multi-client-k8s-gh:latest -t yanisble/multi-client-k8s-gh:${{ env.SHA }} -f ./client/Dockerfile ./client
+          docker build -t yanisble/multi-server-k8s-gh:latest -t yanisble/multi-server-k8s-gh:${{ env.SHA }} -f ./server/Dockerfile ./server
+          docker build -t yanisble/multi-worker-k8s-gh:latest -t yanisble/multi-worker-k8s-gh:${{ env.SHA }} -f ./worker/Dockerfile ./worker
+
+      - name: Push
+        run: |-
+          docker push yanisble/multi-client-k8s-gh:latest
+          docker push yanisble/multi-server-k8s-gh:latest
+          docker push yanisble/multi-worker-k8s-gh:latest
+
+          docker push yanisble/multi-client-k8s-gh:${{ env.SHA }}
+          docker push yanisble/multi-server-k8s-gh:${{ env.SHA }}
+          docker push yanisble/multi-worker-k8s-gh:${{ env.SHA }}
+
+      - name: Apply
+        run: |-
+          kubectl apply -f k8s
+          kubectl set image deployments/server-deployment server=yanisble/multi-server-k8s-gh:${{ env.SHA }}
+          kubectl set image deployments/client-deployment client=yanisble/multi-client-k8s-gh:${{ env.SHA }}
+          kubectl set image deployments/worker-deployment worker=yanisble/multi-worker-k8s-gh:${{ env.SHA }}
